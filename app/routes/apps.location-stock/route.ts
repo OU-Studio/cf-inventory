@@ -1,8 +1,10 @@
 import crypto from "crypto";
-import shopify, { unauthenticated } from "../../shopify.server";
+import shopify, { sessionStorage } from "../../shopify.server";
 
 const PROXY_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01";
+const API_VERSION =
+  process.env.SHOPIFY_API_VERSION ||
+  "2026-01";
 
 const UK_LOCATION_ID = process.env.UK_LOCATION_ID!;
 const US_LOCATION_ID = process.env.US_LOCATION_ID!;
@@ -32,6 +34,19 @@ function verifyProxySignature(url: URL) {
   } catch {
     return false;
   }
+}
+
+async function getOfflineAccessTokenForShop(shop: string): Promise<string | null> {
+  // PrismaSessionStorage supports this in the Shopify app templates:
+  const sessions = await sessionStorage.findSessionsByShop(shop);
+
+  // pick an OFFLINE session (isOnline === false)
+  const offline = sessions.find((s: any) => s && s.isOnline === false && s.accessToken);
+
+  console.log("sessions found:", sessions.map(s => ({ id: s.id, isOnline: s.isOnline })));
+
+
+  return offline?.accessToken || null;
 }
 
 async function getStockAtLocation(
@@ -70,9 +85,7 @@ async function getStockAtLocation(
   let data: any = null;
   try {
     data = JSON.parse(text);
-  } catch {
-    data = null;
-  }
+  } catch {}
 
   if (!resp.ok || data?.errors) {
     throw new Error(
@@ -94,12 +107,10 @@ async function getStockAtLocation(
 export async function loader({ request }: { request: Request }) {
   const url = new URL(request.url);
 
-  // 1) Verify App Proxy signature
   if (!verifyProxySignature(url)) {
     return Response.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  // 2) Inputs
   const variantId = url.searchParams.get("variant") || "";
   const country = (url.searchParams.get("country") || "").toUpperCase();
   const shop = (url.searchParams.get("shop") || "").trim();
@@ -116,38 +127,21 @@ export async function loader({ request }: { request: Request }) {
         ? US_LOCATION_ID
         : UK_LOCATION_ID;
 
-  if (!locationId) {
-    return Response.json({ error: "Missing location IDs" }, { status: 500 });
-  }
+  const accessToken = await getOfflineAccessTokenForShop(shop);
 
-  // 3) Get Admin client/token from stored OFFLINE session via framework helper
-  // This avoids guessing session ids.
-  let accessToken: string | null = null;
-
-  try {
-    // In this template, unauthenticated.admin(shop) returns an object that includes a session.
-    const adminCtx: any = await (unauthenticated as any).admin(shop);
-
-    // Try common shapes
-    accessToken =
-      adminCtx?.session?.accessToken ||
-      adminCtx?.admin?.session?.accessToken ||
-      null;
-
-    if (!accessToken) {
-      return Response.json(
-        { error: "No offline access token available for shop", shop },
-        { status: 401 }
-      );
-    }
-  } catch (e: any) {
+  if (!accessToken) {
+    // This is your current situation
     return Response.json(
-      { error: "Failed to load offline session", details: String(e?.message || e) },
+      {
+        error: "No offline session stored for shop",
+        shop,
+        hint:
+          "Open the embedded app in Shopify admin (or reinstall) to complete offline auth and store a session in Prisma.",
+      },
       { status: 401 }
     );
   }
 
-  // 4) Call Admin API
   try {
     const qty = await getStockAtLocation(shop, accessToken, variantId, locationId);
 
