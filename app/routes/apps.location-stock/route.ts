@@ -3,9 +3,9 @@ import crypto from "crypto";
 const SHOP = process.env.SHOPIFY_SHOP!;
 const ADMIN_TOKEN = process.env.HOST!; // storing shpca_ token here (per your constraint)
 const PROXY_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01";
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01"; 
 
-const UK_LOCATION_ID = process.env.UK_LOCATION_ID!;
+const UK_LOCATION_ID = process.env.UK_LOCATION_ID!; 
 const US_LOCATION_ID = process.env.US_LOCATION_ID!;
 
 function verifyProxySignature(url: URL) {
