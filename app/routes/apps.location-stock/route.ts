@@ -1,28 +1,30 @@
 import crypto from "crypto";
-import shopify, { sessionStorage } from "../../shopify.server";
 
-const PROXY_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const API_VERSION =
-  process.env.SHOPIFY_API_VERSION ||
-  "2026-01";
+const SHOP = process.env.SHOPIFY_SHOP!;
+const CLIENT_ID = process.env.SHOPIFY_API_KEY!;
+const CLIENT_SECRET = process.env.SHOPIFY_API_SECRET!; // also used for proxy signature verification
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01";
 
 const UK_LOCATION_ID = process.env.UK_LOCATION_ID!;
 const US_LOCATION_ID = process.env.US_LOCATION_ID!;
 
+/**
+ * Shopify App Proxy signature verification
+ */
 function verifyProxySignature(url: URL) {
-  if (!PROXY_SECRET) return false;
-
   const params = new URLSearchParams(url.searchParams);
+
   const signature = params.get("signature");
   if (!signature) return false;
 
   params.delete("signature");
 
+  // sort params, concat key=value (no separators)
   const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
   const message = sorted.map(([k, v]) => `${k}=${v}`).join("");
 
   const digest = crypto
-    .createHmac("sha256", PROXY_SECRET)
+    .createHmac("sha256", CLIENT_SECRET)
     .update(message)
     .digest("hex");
 
@@ -36,21 +38,74 @@ function verifyProxySignature(url: URL) {
   }
 }
 
-async function getOfflineAccessTokenForShop(shop: string): Promise<string | null> {
-  // PrismaSessionStorage supports this in the Shopify app templates:
-  const sessions = await sessionStorage.findSessionsByShop(shop);
+/**
+ * In-memory token cache
+ */
+let cachedToken: { token: string; expiresAtMs: number } | null = null;
 
-  // pick an OFFLINE session (isOnline === false)
-  const offline = sessions.find((s: any) => s && s.isOnline === false && s.accessToken);
+/**
+ * Get an admin access token using client credentials.
+ * If this fails, the returned error will include Shopify's exact response.
+ */
+async function getAdminAccessToken(): Promise<string> {
+  const now = Date.now();
+  if (cachedToken && cachedToken.expiresAtMs - now > 60_000) {
+    return cachedToken.token;
+  }
 
-  console.log("sessions found:", sessions.map(s => ({ id: s.id, isOnline: s.isOnline })));
+  const resp = await fetch(`https://${SHOP}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type: "client_credentials",
+    }),
+  });
 
+  const text = await resp.text();
+  let data: any = null;
+  try {
+    data = JSON.parse(text);
+  } catch {}
 
-  return offline?.accessToken || null;
+  if (!resp.ok) {
+    throw new Error(
+      JSON.stringify({
+        where: "token_exchange",
+        status: resp.status,
+        statusText: resp.statusText,
+        body: data ?? text,
+      })
+    );
+  }
+
+  const token = data?.access_token;
+  const expiresIn = data?.expires_in; // seconds (if present)
+
+  if (!token) {
+    throw new Error(
+      JSON.stringify({
+        where: "token_exchange",
+        error: "No access_token in response",
+        body: data ?? text,
+      })
+    );
+  }
+
+  const ttlMs =
+    typeof expiresIn === "number" && expiresIn > 0
+      ? expiresIn * 1000
+      : 20 * 60 * 1000; // fallback 20m
+  cachedToken = { token, expiresAtMs: now + ttlMs };
+
+  return token;
 }
 
+/**
+ * Admin API: fetch variant stock at one location
+ */
 async function getStockAtLocation(
-  shop: string,
   accessToken: string,
   variantId: string,
   locationId: string
@@ -72,7 +127,7 @@ async function getStockAtLocation(
     locationGid: `gid://shopify/Location/${locationId}`,
   };
 
-  const resp = await fetch(`https://${shop}/admin/api/${API_VERSION}/graphql.json`, {
+  const resp = await fetch(`https://${SHOP}/admin/api/${API_VERSION}/graphql.json`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -90,6 +145,7 @@ async function getStockAtLocation(
   if (!resp.ok || data?.errors) {
     throw new Error(
       JSON.stringify({
+        where: "admin_graphql",
         status: resp.status,
         statusText: resp.statusText,
         errors: data?.errors,
@@ -107,19 +163,32 @@ async function getStockAtLocation(
 export async function loader({ request }: { request: Request }) {
   const url = new URL(request.url);
 
+  // env sanity using ONLY your names
+  const missing = [];
+  if (!SHOP) missing.push("SHOPIFY_SHOP");
+  if (!CLIENT_ID) missing.push("SHOPIFY_API_KEY");
+  if (!CLIENT_SECRET) missing.push("SHOPIFY_API_SECRET");
+  if (!UK_LOCATION_ID) missing.push("UK_LOCATION_ID");
+  if (!US_LOCATION_ID) missing.push("US_LOCATION_ID");
+
+  if (missing.length) {
+    return Response.json({ error: "Server misconfigured", missing }, { status: 500 });
+  }
+
+  // 1) Verify App Proxy signature
   if (!verifyProxySignature(url)) {
     return Response.json({ error: "Invalid signature" }, { status: 401 });
   }
 
+  // 2) Inputs
   const variantId = url.searchParams.get("variant") || "";
   const country = (url.searchParams.get("country") || "").toUpperCase();
-  const shop = (url.searchParams.get("shop") || "").trim();
 
-  if (!shop) return Response.json({ error: "Missing shop" }, { status: 400 });
   if (!/^\d+$/.test(variantId)) {
     return Response.json({ error: "Missing/invalid variant" }, { status: 400 });
   }
 
+  // 3) Country → location mapping
   const locationId =
     country === "GB" || country === "UK"
       ? UK_LOCATION_ID
@@ -127,29 +196,14 @@ export async function loader({ request }: { request: Request }) {
         ? US_LOCATION_ID
         : UK_LOCATION_ID;
 
-  const accessToken = await getOfflineAccessTokenForShop(shop);
-
-  if (!accessToken) {
-    // This is your current situation
-    return Response.json(
-      {
-        error: "No offline session stored for shop",
-        shop,
-        hint:
-          "Open the embedded app in Shopify admin (or reinstall) to complete offline auth and store a session in Prisma.",
-      },
-      { status: 401 }
-    );
-  }
-
   try {
-    const qty = await getStockAtLocation(shop, accessToken, variantId, locationId);
+    const token = await getAdminAccessToken();
+    const qty = await getStockAtLocation(token, variantId, locationId);
 
     return new Response(
       JSON.stringify({
         variantId: Number(variantId),
         country,
-        shop,
         locationId: Number(locationId),
         qty,
         available: qty > 0,
@@ -164,7 +218,7 @@ export async function loader({ request }: { request: Request }) {
     );
   } catch (err: any) {
     return Response.json(
-      { error: "Admin API error", details: String(err?.message || err) },
+      { error: "Inventory proxy failed", details: String(err?.message || err) },
       { status: 502 }
     );
   }
