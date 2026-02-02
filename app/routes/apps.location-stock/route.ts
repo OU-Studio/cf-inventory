@@ -2,7 +2,7 @@ import crypto from "crypto";
 
 const SHOP = process.env.SHOPIFY_SHOP!;
 const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const PROXY_SECRET = process.env.SHOPIFY_APP_PROXY_SECRET!;
+const PROXY_SECRET = process.env.SHOPIFY_API_SECRET!;
 
 const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01";
 
