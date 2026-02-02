@@ -2,7 +2,7 @@
 
 client_id = "635f27be2561e55fb30c4be18d10a8a6"
 name = "CFInventory"
-application_url = "https://ou.studio"
+application_url = "https://cf-inventory-production.up.railway.app"
 embedded = true
 
 [build]
@@ -13,12 +13,12 @@ include_config_on_deploy = true
 api_version = "2026-01"
 
   [[webhooks.subscriptions]]
-  topics = [ "app/uninstalled" ]
-  uri = "/webhooks/app/uninstalled"
-
-  [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
@@ -30,6 +30,6 @@ use_legacy_install_flow = false
 redirect_urls = [ ]
 
 [app_proxy]
-url = "https://ou.studio"
+url = "https://cf-inventory-production.up.railway.app/location-stock"
 subpath = "location-stock"
 prefix = "apps"
