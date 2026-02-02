@@ -86,57 +86,32 @@ async function getStockAtLocation(variantId: string, locationId: string) {
 export async function loader({ request }: { request: Request }) {
   const url = new URL(request.url);
 
-  // Sanity
-  if (!SHOP || !ADMIN_TOKEN) {
-    return Response.json(
-      { error: "Missing SHOPIFY_SHOP or HOST token" },
-      { status: 500 }
-    );
-  }
-
-  // Verify App Proxy signature
-  if (!verifyProxySignature(url)) {
-    return Response.json({ error: "Invalid signature" }, { status: 401 });
-  }
-
-  const variantId = url.searchParams.get("variant") || "";
-  const country = (url.searchParams.get("country") || "").toUpperCase();
-
-  if (!/^\d+$/.test(variantId)) {
-    return Response.json({ error: "Missing/invalid variant" }, { status: 400 });
-  }
-
-  const locationId =
-    country === "GB" || country === "UK"
-      ? UK_LOCATION_ID
-      : country === "US"
-        ? US_LOCATION_ID
-        : UK_LOCATION_ID;
-
   try {
-    const qty = await getStockAtLocation(variantId, locationId);
+    // hard env sanity FIRST
+    const missing = [];
+    if (!process.env.SHOPIFY_SHOP) missing.push("SHOPIFY_SHOP");
+    if (!process.env.SHOPIFY_API_SECRET) missing.push("SHOPIFY_API_SECRET");
+    if (!process.env.SHOPIFY_OFFLINE_TOKEN) missing.push("SHOPIFY_OFFLINE_TOKEN");
+    if (!process.env.UK_LOCATION_ID) missing.push("UK_LOCATION_ID");
+    if (!process.env.US_LOCATION_ID) missing.push("US_LOCATION_ID");
 
+    if (missing.length) {
+      console.error("location-stock missing env:", missing);
+      return Response.json({ error: "Missing env vars", missing }, { status: 500 });
+    }
+
+    // ... keep the rest of your logic ...
+  } catch (err: any) {
+    console.error("location-stock fatal:", err?.stack || err?.message || err);
+
+    // Always return JSON
     return new Response(
       JSON.stringify({
-        variantId: Number(variantId),
-        country,
-        locationId: Number(locationId),
-        qty,
-        available: qty > 0,
+        error: "location-stock fatal",
+        details: String(err?.message || err),
       }),
-      {
-        status: 200,
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "public, max-age=15",
-        },
-      }
-    );
-  } catch (err: any) {
-    console.error("location-stock failed:", err?.message || err);
-    return Response.json(
-      { error: "Admin API error", details: String(err?.message || err) },
-      { status: 502 }
+      { status: 500, headers: { "Content-Type": "application/json; charset=utf-8" } }
     );
   }
 }
+
