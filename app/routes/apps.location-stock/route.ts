@@ -70,7 +70,10 @@ async function getAdminAccessToken(): Promise<string> {
   } catch {}
 
   if (!resp.ok) {
+    console.error("token exchange failed:", resp.status, text);
+
     throw new Error(
+        
       JSON.stringify({
         where: "token_exchange",
         status: resp.status,
@@ -78,6 +81,7 @@ async function getAdminAccessToken(): Promise<string> {
         body: data ?? text,
       })
     );
+    
   }
 
   const token = data?.access_token;
@@ -217,9 +221,11 @@ export async function loader({ request }: { request: Request }) {
       }
     );
   } catch (err: any) {
-    return Response.json(
-      { error: "Inventory proxy failed", details: String(err?.message || err) },
-      { status: 502 }
-    );
-  }
+  console.error("location-stock error:", err?.message || err);
+  return Response.json(
+    { error: "Inventory proxy failed", details: String(err?.message || err) },
+    { status: 502 }
+  );
+}
+
 }
